@@ -1,5 +1,6 @@
 // ---------- Config ----------
-const API_ENDPOINT = "https://YOUR-WORKER-OR-FUNCTION-URL.example.com/api/judge";
+const PPQ_API_URL = "https://api.ppq.ai/chat/completions";
+const PPQ_API_KEY = "sk-o847o1lAOeICRqfNP5OxUg"; // you said it's fine to be public
 const WORDLIST_FILE = "wordlist.txt";
 
 // SRS defaults (SM-2 style)
@@ -33,7 +34,6 @@ function wireUi() {
 async function loadWordlist() {
   const text = await fetch(WORDLIST_FILE).then(r => r.text());
   words = text.split(/[,\n]/).map(w => w.trim()).filter(Boolean);
-  // ensure SRS objects exist
   for (const w of words) if (!srs[w]) srs[w] = freshCard();
   saveSrs();
 }
@@ -54,7 +54,6 @@ function formatWhen(iso) {
 }
 function pickNext() {
   const now = Date.now();
-  // Prioritize due, then least reviewed
   const sorted = words.slice().sort((a,b) => {
     const A = srs[a], B = srs[b];
     const da = new Date(A.dueISO).getTime() - now;
@@ -66,19 +65,17 @@ function pickNext() {
   return sorted[0];
 }
 function applySm2(state, quality) {
-  // quality: 0..5
   const q = Math.max(0, Math.min(5, quality));
-  // ease update
   state.ease = state.ease + (0.1 - (5 - q) * (0.08 + (5 - q) * 0.02));
   if (state.ease < MIN_EASE) state.ease = MIN_EASE;
 
   if (q < 3) {
     state.reps = 0;
-    state.interval = isFastMode() ? 0.05 : 1; // 3 minutes in fast mode, else 1 day
+    state.interval = isFastMode() ? 0.05 : 1;
   } else {
     state.reps += 1;
-    if (state.reps === 1) state.interval = isFastMode() ? 0.2 : 1;        // ~12 min or 1 day
-    else if (state.reps === 2) state.interval = isFastMode() ? 1 : 6;     // ~1 hour or 6 days
+    if (state.reps === 1) state.interval = isFastMode() ? 0.2 : 1;
+    else if (state.reps === 2) state.interval = isFastMode() ? 1 : 6;
     else state.interval = state.interval * state.ease;
   }
   state.dueISO = daysFromNow(state.interval).toISOString();
@@ -115,7 +112,6 @@ function nextCard(skipped=false) {
   current = pickNext();
   if (!current) return;
   if (skipped) {
-    // small nudge forward so skip doesn't immediately re-show
     const st = srs[current];
     st.dueISO = daysFromNow(isFastMode()? 0.2 : 0.5).toISOString();
     saveSrs();
@@ -129,6 +125,58 @@ function showHint() {
   fb.textContent = 'Think of a concise, dictionary-style definition. Examples are not required.';
 }
 
+// ---------- PPQ direct grader ----------
+async function gradeWithPPQ(word, userDefinition) {
+  const system = `You are a concise grader for ENGLISH dictionary-style definitions.
+Score the user's definition of a given word from 0-5:
+0=totally wrong or off-topic;
+1=very incomplete or misleading;
+2=partially correct but missing key idea;
+3=mostly correct with minor gaps;
+4=correct with good phrasing;
+5=fully correct, crisp dictionary-level definition.
+Return ONLY strict JSON: {"score":n,"correct":bool,"explanation":"short sentence"}.`;
+
+  const user = `Word: "${word}"
+User definition: "${userDefinition}"
+Respond with JSON only.`;
+
+  const res = await fetch(PPQ_API_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${PPQ_API_KEY}`
+    },
+    body: JSON.stringify({
+      model: "gpt-5-nano",
+      temperature: 0.1,
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: user }
+      ]
+    })
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`PPQ error ${res.status}: ${text}`);
+  }
+
+  const data = await res.json();
+  // OpenAI-compatible: choices[0].message.content is the model text
+  const text = data?.choices?.[0]?.message?.content?.trim?.() || "{}";
+
+  let parsed;
+  try { parsed = JSON.parse(text); }
+  catch { parsed = { score: 0, correct: false, explanation: "Could not parse model output." }; }
+
+  const score = Math.max(0, Math.min(5, Number(parsed.score ?? 0)));
+  const correct = Boolean(parsed.correct ?? (score >= 4));
+  const explanation = String(parsed.explanation ?? "").slice(0, 200);
+
+  return { score, correct, explanation };
+}
+
 // ---------- Submit / Grade ----------
 async function onSubmit(e) {
   e.preventDefault();
@@ -140,13 +188,7 @@ async function onSubmit(e) {
   fb.className = 'feedback'; fb.textContent = 'Grading…';
 
   try {
-    const res = await fetch(API_ENDPOINT, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ word, userDefinition: input })
-    });
-    if (!res.ok) throw new Error('Grader error');
-    const { score, correct, explanation } = await res.json();
+    const { score, correct, explanation } = await gradeWithPPQ(word, input);
 
     const st = srs[word] || freshCard();
     st.history.push({ t: new Date().toISOString(), input, score });
@@ -158,9 +200,8 @@ async function onSubmit(e) {
 
   } catch (err) {
     fb.className = 'feedback bad';
-    fb.textContent = 'Could not grade. Check your grading endpoint.';
+    fb.textContent = 'Could not grade. ' + (err?.message || 'Check your API call.');
   } finally {
-    // Auto-advance after a short pause
     setTimeout(() => nextCard(false), 900);
   }
 }
