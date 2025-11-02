@@ -43,12 +43,11 @@
     </section>
 
     <footer>
-      <small>
-        Wordlist: <code>wordlist.txt</code> · Progress is saved to your browser (no database).
-      </small>
+      <small>Wordlist: <code>wordlist.txt</code> · Progress is saved to your browser (no database).</small>
     </footer>
   </main>
 
-  <script src="app.js"></script>
+  <!-- cache-bust the script so the new JS actually loads -->
+  <script src="app.js?v=4"></script>
 </body>
 </html>
