@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Vocab Drill</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="wrap">
+    <header>
+      <h1>Vocab Drill</h1>
+      <div class="controls">
+        <button id="importBtn" title="Import progress JSON">Import</button>
+        <button id="exportBtn" title="Export progress JSON">Export</button>
+        <label class="toggle">
+          <input type="checkbox" id="fastMode" />
+          <span>Fast mode (minutes)</span>
+        </label>
+      </div>
+    </header>
+
+    <section class="card">
+      <div class="meta">
+        <span id="dueInfo"></span>
+        <span id="queueInfo"></span>
+      </div>
+
+      <div id="word" class="word">—</div>
+
+      <form id="answerForm" autocomplete="off">
+        <input id="definition" type="text" placeholder="Type your definition and press Enter…" required />
+      </form>
+
+      <div id="feedback" class="feedback"></div>
+
+      <div class="actions">
+        <button id="skipBtn" class="ghost">Skip</button>
+        <button id="showBtn" class="ghost">Show hint</button>
+      </div>
+    </section>
+
+    <footer>
+      <small>
+        Wordlist: <code>wordlist.txt</code> · Progress is saved to your browser (no database).
+      </small>
+    </footer>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
