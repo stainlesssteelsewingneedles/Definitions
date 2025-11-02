@@ -1,6 +1,6 @@
 // ---------- Config ----------
 const PPQ_API_URL = "https://api.ppq.ai/chat/completions";
-const PPQ_API_KEY = "sk-o847o1lAOeICRqfNP5OxUg"; // you said it's fine to be public
+const PPQ_API_KEY = "sk-o847o1lAOeICRqfNP5OxUg"; // per your note
 const WORDLIST_FILE = "wordlist.txt";
 
 // SRS defaults (SM-2 style)
@@ -25,7 +25,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 function wireUi() {
   document.getElementById('answerForm').addEventListener('submit', onSubmit);
   document.getElementById('skipBtn').addEventListener('click', () => { nextCard(true); });
-  document.getElementById('showBtn').addEventListener('click', showHint);
+  document.getElementById('revealBtn').addEventListener('click', onReveal);
+  document.getElementById('nextBtn').addEventListener('click', () => nextCard(false));
   document.getElementById('exportBtn').addEventListener('click', exportProgress);
   document.getElementById('importBtn').addEventListener('click', importProgress);
   document.getElementById('fastMode').addEventListener('change', updateMeta);
@@ -47,10 +48,6 @@ function daysFromNow(d) {
     const t = new Date(); t.setMinutes(t.getMinutes() + Math.max(1, Math.round(d))); return t;
   }
   const t = new Date(); t.setDate(t.getDate() + Math.max(1, Math.round(d))); return t;
-}
-function dueDateFromISO(iso) { return new Date(iso); }
-function formatWhen(iso) {
-  const d = new Date(iso); return isFastMode() ? `${Math.round((d - Date.now())/60000)} min` : d.toLocaleDateString();
 }
 function pickNext() {
   const now = Date.now();
@@ -103,8 +100,8 @@ function setWord(w) {
   document.getElementById('word').textContent = w;
   document.getElementById('definition').value = '';
   document.getElementById('definition').focus();
-  document.getElementById('feedback').className = 'feedback';
-  document.getElementById('feedback').textContent = '';
+  setFeedback('', '');
+  setCanonical('');
   updateMeta();
 }
 
@@ -119,13 +116,35 @@ function nextCard(skipped=false) {
   setWord(current);
 }
 
-function showHint() {
+function setFeedback(text, cls='') {
   const fb = document.getElementById('feedback');
-  fb.className = 'feedback warn';
-  fb.textContent = 'Think of a concise, dictionary-style definition. Examples are not required.';
+  fb.className = 'feedback' + (cls ? ' ' + cls : '');
+  fb.textContent = text;
+}
+function setCanonical(text) {
+  const el = document.getElementById('canon');
+  el.className = 'feedback';
+  el.textContent = text;
 }
 
-// ---------- PPQ direct grader ----------
+// ---------- PPQ helpers ----------
+async function ppqChat(messages, temperature=0.1, model="gpt-5-nano") {
+  const res = await fetch(PPQ_API_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${PPQ_API_KEY}`
+    },
+    body: JSON.stringify({ model, temperature, messages })
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(()=>"");
+    throw new Error(`PPQ error ${res.status}: ${text}`);
+  }
+  const data = await res.json();
+  return (data?.choices?.[0]?.message?.content ?? "").trim();
+}
+
 async function gradeWithPPQ(word, userDefinition) {
   const system = `You are a concise grader for ENGLISH dictionary-style definitions.
 Score the user's definition of a given word from 0-5:
@@ -141,30 +160,10 @@ Return ONLY strict JSON: {"score":n,"correct":bool,"explanation":"short sentence
 User definition: "${userDefinition}"
 Respond with JSON only.`;
 
-  const res = await fetch(PPQ_API_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${PPQ_API_KEY}`
-    },
-    body: JSON.stringify({
-      model: "gpt-5-nano",
-      temperature: 0.1,
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: user }
-      ]
-    })
-  });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`PPQ error ${res.status}: ${text}`);
-  }
-
-  const data = await res.json();
-  // OpenAI-compatible: choices[0].message.content is the model text
-  const text = data?.choices?.[0]?.message?.content?.trim?.() || "{}";
+  const text = await ppqChat(
+    [{ role: "system", content: system }, { role: "user", content: user }],
+    0.1
+  );
 
   let parsed;
   try { parsed = JSON.parse(text); }
@@ -177,6 +176,15 @@ Respond with JSON only.`;
   return { score, correct, explanation };
 }
 
+async function fetchCanonicalDefinition(word) {
+  const system = `You produce authoritative, *one-sentence* dictionary-style definitions (no examples, no synonyms, no extra lines).`;
+  const user = `Give a single-sentence definition of "${word}" in clear, plain English. Limit to ~12–20 words.`;
+  return await ppqChat(
+    [{ role: "system", content: system }, { role: "user", content: user }],
+    0  // as deterministic as possible
+  );
+}
+
 // ---------- Submit / Grade ----------
 async function onSubmit(e) {
   e.preventDefault();
@@ -184,8 +192,7 @@ async function onSubmit(e) {
   if (!input) return;
 
   const word = current;
-  const fb = document.getElementById('feedback');
-  fb.className = 'feedback'; fb.textContent = 'Grading…';
+  setFeedback('Grading…');
 
   try {
     const { score, correct, explanation } = await gradeWithPPQ(word, input);
@@ -195,14 +202,21 @@ async function onSubmit(e) {
     applySm2(st, score);
     srs[word] = st; saveSrs();
 
-    fb.className = 'feedback ' + (score >= 4 ? 'ok' : score >= 2 ? 'warn' : 'bad');
-    fb.textContent = `Score ${score}/5 — ${correct ? '✅ Close/correct.' : '❌ Needs work.'} ${explanation}`;
-
+    const cls = (score >= 4 ? 'ok' : score >= 2 ? 'warn' : 'bad');
+    setFeedback(`Score ${score}/5 — ${correct ? '✅ Close/correct.' : '❌ Needs work.'} ${explanation}`, cls);
   } catch (err) {
-    fb.className = 'feedback bad';
-    fb.textContent = 'Could not grade. ' + (err?.message || 'Check your API call.');
-  } finally {
-    setTimeout(() => nextCard(false), 900);
+    setFeedback('Could not grade. ' + (err?.message || 'Check your API call.'), 'bad');
+  }
+}
+
+// ---------- Reveal canonical ----------
+async function onReveal() {
+  setCanonical('Fetching canonical definition…');
+  try {
+    const def = await fetchCanonicalDefinition(current);
+    setCanonical(`Canonical: ${def}`);
+  } catch (err) {
+    setCanonical('Could not fetch canonical definition.');
   }
 }
 
